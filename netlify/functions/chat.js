@@ -5,7 +5,8 @@
 const DEFAULT_ENDPOINT = 'https://api.deepseek.com/v1/chat/completions'
 const DEFAULT_MODEL = 'deepseek-chat'
 
-export default async (event) => {
+// 兼容 Netlify v1 (handler) 和 v2 (default export) 两种格式
+const handler = async (event) => {
   // 只允许 POST
   if (event.httpMethod !== 'POST') {
     return {
@@ -37,6 +38,7 @@ export default async (event) => {
     const endpoint = process.env.LLM_ENDPOINT || DEFAULT_ENDPOINT
     const model = process.env.LLM_MODEL || DEFAULT_MODEL
 
+    // 使用 Node 18+ 内置 fetch（Netlify 默认 Node 18）
     const response = await fetch(endpoint, {
       method: 'POST',
       headers: {
@@ -69,7 +71,9 @@ export default async (event) => {
   } catch (err) {
     return {
       statusCode: 500,
-      body: JSON.stringify({ error: '服务器错误: ' + err.message })
+      body: JSON.stringify({ error: '服务器错误: ' + (err.message || String(err)) })
     }
   }
 }
+
+export { handler as default }
