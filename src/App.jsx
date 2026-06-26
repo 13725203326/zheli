@@ -853,7 +853,7 @@ const generateSummary = (conversation) => {
 }
 
 // ==============================
-// 调用真实 LLM
+// 调用真实 LLM（通过 Netlify Function 代理，API Key 存在服务器端）
 // ==============================
 const callLLM = async (userMessage, conversation, llmConfig) => {
   const messagesForLLM = [
@@ -868,26 +868,55 @@ const callLLM = async (userMessage, conversation, llmConfig) => {
   }
   messagesForLLM.push({ role: 'user', content: userMessage })
 
-  const response = await fetch(llmConfig.endpoint, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': 'Bearer ' + llmConfig.apiKey
-    },
-    body: JSON.stringify({
-      model: llmConfig.model,
-      messages: messagesForLLM,
-      temperature: llmConfig.temperature
-    })
-  })
+  // 判断是走代理还是直连
+  // 有 apiKey → 直连用户自己的 API（保留原有功能）
+  // 无 apiKey → 走 /api/chat 代理（评委默认体验）
+  const hasUserKey = llmConfig && llmConfig.apiKey && llmConfig.apiKey.trim().length > 0
 
-  if (!response.ok) {
-    const errText = await response.text()
-    throw new Error('LLM 调用失败 (' + response.status + '): ' + errText)
+  let raw
+
+  if (hasUserKey) {
+    // 直连模式（用户自己配了 Key）
+    const response = await fetch(llmConfig.endpoint, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': 'Bearer ' + llmConfig.apiKey
+      },
+      body: JSON.stringify({
+        model: llmConfig.model,
+        messages: messagesForLLM,
+        temperature: llmConfig.temperature
+      })
+    })
+
+    if (!response.ok) {
+      const errText = await response.text()
+      throw new Error('LLM 调用失败 (' + response.status + '): ' + errText)
+    }
+
+    const data = await response.json()
+    raw = data.choices[0].message.content
+  } else {
+    // 代理模式（默认，评委无需配 Key）
+    const response = await fetch('/api/chat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        messages: messagesForLLM,
+        temperature: (llmConfig && llmConfig.temperature) || 0.7
+      })
+    })
+
+    if (!response.ok) {
+      const errData = await response.json().catch(() => ({}))
+      throw new Error(errData.error || ('代理调用失败 (' + response.status + ')'))
+    }
+
+    const data = await response.json()
+    raw = data.content
   }
 
-  const data = await response.json()
-  const raw = data.choices[0].message.content
   return parseLLMResponse(raw)
 }
 
@@ -896,11 +925,18 @@ const callLLM = async (userMessage, conversation, llmConfig) => {
 // 返回：{ content: string, summary: object|null }
 // ==============================
 const callAI = async (userMessage, conversation, llmConfig) => {
-  const hasLLM = llmConfig && llmConfig.apiKey && llmConfig.apiKey.trim().length > 0
-
-  if (hasLLM) {
+  // 默认走 LLM（代理模式），不再因为没有 apiKey 就回退到规则引擎
+  // 只有在代理也失败时才回退
+  try {
     const result = await callLLM(userMessage, conversation, llmConfig)
     return result
+  } catch (err) {
+    // 如果用户自己配了 Key 且失败了，直接报错
+    const hasUserKey = llmConfig && llmConfig.apiKey && llmConfig.apiKey.trim().length > 0
+    if (hasUserKey) throw err
+
+    // 代理失败 → 回退到规则引擎
+    console.warn('代理调用失败，回退到规则引擎:', err.message)
   }
 
   await new Promise(resolve => setTimeout(resolve, 1200 + Math.random() * 1000))
@@ -952,12 +988,33 @@ const callAI = async (userMessage, conversation, llmConfig) => {
   return { content, summary }
 }
 
+// ==============================
+// localStorage 持久化：保存/恢复对话状态
+// ==============================
+const STORAGE_KEY = '这里_chat_state'
+
+const saveState = (state) => {
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(state))
+  } catch (e) {}
+}
+
+const loadState = () => {
+  try {
+    const saved = localStorage.getItem(STORAGE_KEY)
+    if (saved) return JSON.parse(saved)
+  } catch (e) {}
+  return null
+}
+
 function App() {
-  const [messages, setMessages] = useState([])
+  const savedState = loadState()
+
+  const [messages, setMessages] = useState(savedState?.messages || [])
   const [inputValue, setInputValue] = useState('')
   const [isTyping, setIsTyping] = useState(false)
-  const [showOpening, setShowOpening] = useState(true)
-  const [conversation, setConversation] = useState({
+  const [showOpening, setShowOpening] = useState(!savedState || savedState.messages.length === 0)
+  const [conversation, setConversation] = useState(savedState?.conversation || {
     round: 0,
     userMessages: [],
     aiMessages: [],
@@ -965,10 +1022,10 @@ function App() {
     stuckPoints: [],
     directions: []
   })
-  const [initialHook, setInitialHook] = useState('')
-  const [collectedLayers, setCollectedLayers] = useState([])
-  const [stuckPoint, setStuckPoint] = useState('')
-  const [directions, setDirections] = useState([])
+  const [initialHook, setInitialHook] = useState(savedState?.initialHook || '')
+  const [collectedLayers, setCollectedLayers] = useState(savedState?.collectedLayers || [])
+  const [stuckPoint, setStuckPoint] = useState(savedState?.stuckPoint || '')
+  const [directions, setDirections] = useState(savedState?.directions || [])
 
   const [showConfig, setShowConfig] = useState(false)
   const [llmConfig, setLLMConfig] = useState(() => {
@@ -994,6 +1051,18 @@ function App() {
       localStorage.setItem('这里_llmConfig', JSON.stringify(llmConfig))
     } catch (e) {}
   }, [llmConfig])
+
+  // 持久化对话状态
+  useEffect(() => {
+    saveState({
+      messages,
+      conversation,
+      initialHook,
+      collectedLayers,
+      stuckPoint,
+      directions
+    })
+  }, [messages, conversation, initialHook, collectedLayers, stuckPoint, directions])
 
   const handleScrollToBottom = () => {
     if (chatContainerRef.current) {
@@ -1029,7 +1098,7 @@ function App() {
 
     try {
       const result = await callAI(userMessage, conversation, llmConfig)
-      const aiText = result.content
+      const aiText = (result.content || '').trim() || '（我听到了，让我想想怎么回应你……）'
       const summary = result.summary
 
       const aiMessage = {
@@ -1047,57 +1116,29 @@ function App() {
         aiMessages: [...prev.aiMessages, aiText]
       }))
 
-      if (summary) {
+      if (summary && typeof summary === 'object') {
         if (summary.initial && !initialHook) {
           setInitialHook(summary.initial)
         }
-if (Array.isArray(summary.layers) && summary.layers.length > 0) {
-  // 直接用 LLM 最新一轮的判断替换，不再累加
-  // 这样即使某一轮 LLM 偷懒混入"怀念过去"，
-  // 下一轮它纠正了，就自动被覆盖掉
-  setCollectedLayers(
-    summary.layers.slice(0, 5).map(l => ({
-      name: l.name || '',
-      summary: l.summary || '',
-      quote: l.quote || ''
-    }))
-  )
-}
+        if (Array.isArray(summary.layers) && summary.layers.length > 0) {
+          setCollectedLayers(
+            summary.layers.slice(0, 5).map(l => ({
+              name: (l && l.name) || '',
+              summary: (l && l.summary) || '',
+              quote: (l && l.quote) || ''
+            }))
+          )
+        }
         if (summary.stuck) {
           setStuckPoint(summary.stuck)
         }
         if (Array.isArray(summary.directions) && summary.directions.length > 0) {
           setDirections(summary.directions)
         }
-          } else {
-        // 配了 API key 但 LLM 这轮没返回 <summary> → 不用规则引擎兜底，
-        // 保持已有的梳理数据不变，避免"怀念过去"这种硬编码误判混进来。
-        const hasLLM = llmConfig && llmConfig.apiKey && llmConfig.apiKey.trim().length > 0
-
-        if (hasLLM) {
-          // LLM 模式：什么都不做，保留前面几轮已经正确梳理出来的数据
-          if (conversation.userMessages.length === 0 && !initialHook) {
-            setInitialHook(userMessage.length > 40 ? userMessage.substring(0, 40) + '……' : userMessage)
-          }
-          // 不调用 analyzeByThemes，不污染 collectedLayers
-        } else {
-          // 未配 API key（规则引擎模式）：保留原有兜底逻辑
-          if (conversation.userMessages.length === 0) {
-            setInitialHook(userMessage.length > 40 ? userMessage.substring(0, 40) + '……' : userMessage)
-          }
-          const allUserMsgsSoFar = [...conversation.userMessages, userMessage].join('。')
-          const freshLayers = analyzeByThemes(allUserMsgsSoFar)
-          setCollectedLayers(prev => {
-            const seen = new Set(prev.map(l => l.name))
-            const merged = [...prev]
-            freshLayers.forEach(l => {
-              if (!seen.has(l.name)) {
-                merged.push(l)
-                seen.add(l.name)
-              }
-            })
-            return merged.slice(0, 6)
-          })
+      } else {
+        // LLM 没返回 summary → 保留已有数据，只补充 initialHook
+        if (conversation.userMessages.length === 0 && !initialHook) {
+          setInitialHook(userMessage.length > 40 ? userMessage.substring(0, 40) + '……' : userMessage)
         }
       }
     } catch (error) {
