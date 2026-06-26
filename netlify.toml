@@ -6,7 +6,13 @@
 [functions]
   node_bundler = "esbuild"
 
-# SPA 路由回退
+# API 代理优先匹配，不重定向
+[[redirects]]
+  from = "/api/*"
+  to = "/.netlify/functions/:splat"
+  status = 200
+
+# SPA 路由回退（排除 /api）
 [[redirects]]
   from = "/*"
   to = "/index.html"
