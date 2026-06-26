@@ -1175,10 +1175,39 @@ function App() {
     setShowOpening(false)
   }
 
+  const handleReset = () => {
+    setMessages([])
+    setConversation({
+      round: 0,
+      userMessages: [],
+      aiMessages: [],
+      coreTopics: [],
+      stuckPoints: [],
+      directions: []
+    })
+    setInitialHook('')
+    setCollectedLayers([])
+    setStuckPoint('')
+    setDirections([])
+    setShowOpening(true)
+    setInputValue('')
+    setLLMStatus('')
+    try { localStorage.removeItem(STORAGE_KEY) } catch (e) {}
+  }
+
   return (
     <div className="app">
       <header className="header">
         <h1>这里</h1>
+        {messages.length > 0 && (
+          <button
+            className="reset-button"
+            onClick={handleReset}
+            title="重新开始"
+          >
+            重新开始
+          </button>
+        )}
         <button
           className="config-button"
           onClick={() => setShowConfig(true)}

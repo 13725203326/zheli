@@ -500,6 +500,24 @@ textarea::placeholder {
   border-color: var(--accent);
 }
 
+.reset-button {
+  background: transparent;
+  border: 1px solid var(--border-subtle);
+  color: var(--text-secondary);
+  padding: 6px 16px;
+  border-radius: 20px;
+  font-size: 0.82rem;
+  cursor: pointer;
+  transition: all 0.2s;
+  margin-left: auto;
+  margin-right: 12px;
+}
+
+.reset-button:hover {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
 .config-status {
   position: absolute;
   bottom: 4px;
